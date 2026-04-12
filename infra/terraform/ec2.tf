@@ -58,6 +58,7 @@ resource "aws_instance" "k3s_server" {
   key_name               = var.key_pair_name
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.k3s_server.id]
+  iam_instance_profile   = aws_iam_instance_profile.k3s_agent.name
   user_data              = local.k3s_server_user_data
 
   root_block_device {
