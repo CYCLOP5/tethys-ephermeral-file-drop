@@ -168,7 +168,7 @@ resource "aws_security_group" "rds" {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.k3s_agent.id]
+    security_groups = [aws_security_group.k3s_agent.id, aws_security_group.k3s_server.id]
   }
 
   egress {

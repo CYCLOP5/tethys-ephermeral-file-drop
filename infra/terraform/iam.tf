@@ -91,6 +91,8 @@ resource "aws_iam_role_policy_attachment" "wiper" {
   policy_arn = aws_iam_policy.wiper.arn
 }
 
+# Add SSM to vault and k3s_server (Wait, k3s_server role doesn't exist? K3s_agent is the only instance profile?)
+
 # -------- K3s agent instance profile: superset of vault+wiper so pods can AssumeRole as needed --------
 resource "aws_iam_role" "k3s_agent" {
   name               = "${local.name_prefix}-k3s-agent"
@@ -115,6 +117,30 @@ data "aws_iam_policy_document" "k3s_agent" {
     ]
     resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/tethys/*"]
   }
+
+  statement {
+    sid    = "EcrAuth"
+    effect = "Allow"
+    actions = [
+      "ecr:GetAuthorizationToken"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "EcrPull"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:DescribeImages",
+      "ecr:DescribeRepositories"
+    ]
+    resources = [
+      for r in aws_ecr_repository.services : r.arn
+    ]
+  }
 }
 
 resource "aws_iam_policy" "k3s_agent" {
@@ -130,6 +156,11 @@ resource "aws_iam_role_policy_attachment" "k3s_agent" {
 resource "aws_iam_instance_profile" "k3s_agent" {
   name = "${local.name_prefix}-k3s-agent"
   role = aws_iam_role.k3s_agent.name
+}
+
+resource "aws_iam_role_policy_attachment" "k3s_agent_ssm" {
+  role       = aws_iam_role.k3s_agent.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 # -------- Jenkins role: describe EC2 + full ECR on project repos --------
@@ -199,11 +230,16 @@ resource "aws_iam_instance_profile" "jenkins" {
   role = aws_iam_role.jenkins.name
 }
 
+resource "aws_iam_role_policy_attachment" "jenkins_ssm" {
+  role       = aws_iam_role.jenkins.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 # -------- ECR repositories for our three images --------
 resource "aws_ecr_repository" "services" {
   for_each             = toset(["vault", "wiper", "frontend"])
   name                 = "tethys/${each.key}"
-  image_tag_mutability = "IMMUTABLE"
+  image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
