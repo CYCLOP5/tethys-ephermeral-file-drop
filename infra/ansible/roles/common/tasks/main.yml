@@ -17,14 +17,13 @@
 - name: Install baseline utilities
   ansible.builtin.dnf:
     name:
-      - curl
       - tar
       - unzip
       - jq
       - vim
       - htop
       - chrony
-      - fail2ban
+#      - fail2ban
       - audit
     state: present
   when: ansible_facts['os_family'] == 'RedHat'
@@ -93,9 +92,9 @@
     - { key: "fs.protected_hardlinks", value: "1" }
     - { key: "fs.protected_symlinks", value: "1" }
 
-- name: Enable and start fail2ban
-  ansible.builtin.service:
-    name: fail2ban
-    state: started
-    enabled: true
-  ignore_errors: true
+#- name: Enable and start fail2ban
+#  ansible.builtin.service:
+#    name: fail2ban
+#    state: started
+#    enabled: true
+#  ignore_errors: true
