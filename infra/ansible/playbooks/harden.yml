@@ -1,0 +1,6 @@
+---
+- name: CIS-lite hardening pass
+  hosts: all
+  become: true
+  roles:
+    - common

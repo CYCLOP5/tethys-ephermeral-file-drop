@@ -1,0 +1,96 @@
+---
+- name: Install prerequisites
+  ansible.builtin.dnf:
+    name:
+      - java-21-amazon-corretto-headless
+      - docker
+      - git
+      - python3-pip
+    state: present
+
+- name: Enable + start docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Add Jenkins repo
+  ansible.builtin.get_url:
+    url: https://pkg.jenkins.io/redhat-stable/jenkins.repo
+    dest: /etc/yum.repos.d/jenkins.repo
+    mode: "0644"
+
+- name: Import Jenkins GPG key
+  ansible.builtin.rpm_key:
+    key: https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+    state: present
+
+- name: Install Jenkins LTS
+  ansible.builtin.dnf:
+    name: jenkins
+    state: present
+
+- name: Install kubectl
+  ansible.builtin.get_url:
+    url: https://dl.k8s.io/release/v1.29.4/bin/linux/amd64/kubectl
+    dest: /usr/local/bin/kubectl
+    mode: "0755"
+
+- name: Install Terraform (via hashicorp dnf repo)
+  ansible.builtin.shell: |
+    dnf install -y dnf-plugins-core
+    dnf config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+    dnf -y install terraform
+  args:
+    creates: /usr/bin/terraform
+
+- name: Install Ansible
+  ansible.builtin.pip:
+    name: ansible
+    executable: pip3
+
+- name: Install Trivy (image scanner)
+  ansible.builtin.shell: |
+    rpm -ivh https://github.com/aquasecurity/trivy/releases/download/v0.51.1/trivy_0.51.1_Linux-64bit.rpm || true
+  args:
+    creates: /usr/bin/trivy
+
+- name: Allow jenkins user to use docker
+  ansible.builtin.user:
+    name: jenkins
+    groups: docker
+    append: true
+
+- name: Ensure Jenkins casc dir exists
+  ansible.builtin.file:
+    path: /var/lib/jenkins/casc
+    state: directory
+    owner: jenkins
+    group: jenkins
+    mode: "0755"
+
+- name: Drop JCasC config
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../ci/jenkins/casc.yaml"
+    dest: /var/lib/jenkins/casc/jenkins.yaml
+    owner: jenkins
+    group: jenkins
+    mode: "0644"
+  notify: restart jenkins
+
+- name: Point Jenkins at the JCasC file
+  ansible.builtin.copy:
+    dest: /etc/sysconfig/jenkins
+    content: |
+      JAVA_OPTS="-Djenkins.install.runSetupWizard=false -Dcasc.jenkins.config=/var/lib/jenkins/casc/jenkins.yaml"
+      JENKINS_JAVA_OPTIONS="$JAVA_OPTS"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart jenkins
+
+- name: Enable + start Jenkins
+  ansible.builtin.systemd:
+    name: jenkins
+    state: started
+    enabled: true

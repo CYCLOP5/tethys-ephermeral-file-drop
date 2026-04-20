@@ -1,0 +1,61 @@
+---
+- name: Harden every host
+  hosts: all
+  become: true
+  roles:
+    - common
+
+- name: Install K3s server
+  hosts: k3s_server
+  become: true
+  roles:
+    - k3s_server
+
+- name: Install K3s agents
+  hosts: k3s_agents
+  become: true
+  roles:
+    - k3s_agent
+
+- name: Install Jenkins LTS
+  hosts: jenkins
+  become: true
+  roles:
+    - jenkins
+
+- name: Fetch kubeconfig to Jenkins
+  hosts: k3s_server
+  become: true
+  tasks:
+    - name: Read kubeconfig from server
+      ansible.builtin.slurp:
+        src: /etc/rancher/k3s/k3s.yaml
+      register: kubeconfig_blob
+
+    - name: Save kubeconfig locally for Jenkins
+      ansible.builtin.copy:
+        content: "{{ kubeconfig_blob.content | b64decode | replace('127.0.0.1', hostvars[inventory_hostname].k3s_server_private_ip) }}"
+        dest: /tmp/k3s-kubeconfig.yaml
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+- name: Ship kubeconfig into Jenkins
+  hosts: jenkins
+  become: true
+  tasks:
+    - name: Ensure /var/lib/jenkins/.kube exists
+      ansible.builtin.file:
+        path: /var/lib/jenkins/.kube
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: "0700"
+
+    - name: Upload kubeconfig
+      ansible.builtin.copy:
+        src: /tmp/k3s-kubeconfig.yaml
+        dest: /var/lib/jenkins/.kube/config
+        owner: jenkins
+        group: jenkins
+        mode: "0600"

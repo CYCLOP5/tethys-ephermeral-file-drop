@@ -1,0 +1,34 @@
+# Values for installing ingress-nginx via Helm on K3s:
+#   helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+#   helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+#     --namespace ingress-nginx --create-namespace \
+#     -f deploy/k8s/ingress/nginx-ingress-values.yaml
+#
+# We front this with the AWS ALB that Terraform creates; the ALB target group
+# health-checks NodePort 30080.
+
+controller:
+  service:
+    type: NodePort
+    nodePorts:
+      http: 30080
+      https: 30443
+  config:
+    use-forwarded-headers: "true"
+    enable-real-ip: "true"
+    hsts: "true"
+    hsts-max-age: "31536000"
+    force-ssl-redirect: "false"
+    ssl-redirect: "false"
+    use-gzip: "true"
+  metrics:
+    enabled: false
+  admissionWebhooks:
+    enabled: true
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "96Mi"
+    limits:
+      cpu: "300m"
+      memory: "256Mi"

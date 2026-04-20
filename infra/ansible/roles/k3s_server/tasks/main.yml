@@ -1,0 +1,52 @@
+---
+- name: Check for existing k3s binary
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_bin
+
+- name: Install K3s server (single-node control plane)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="{{ k3s_version }}" \
+      INSTALL_K3S_EXEC="server \
+        --write-kubeconfig-mode 644 \
+        --tls-san {{ ansible_default_ipv4.address }} \
+        --tls-san {{ hostvars[inventory_hostname].ansible_host }} \
+        --disable traefik \
+        --disable servicelb \
+        --kube-apiserver-arg=anonymous-auth=false \
+        --kube-apiserver-arg=audit-log-path=/var/log/kubernetes/audit.log \
+        --kube-apiserver-arg=audit-log-maxage=30" \
+      sh -s -
+  args:
+    creates: /usr/local/bin/k3s
+  when: not k3s_bin.stat.exists
+
+- name: Ensure k3s service is started
+  ansible.builtin.systemd:
+    name: k3s
+    state: started
+    enabled: true
+
+- name: Wait for node-token to exist
+  ansible.builtin.wait_for:
+    path: "{{ k3s_token_path }}"
+    timeout: 120
+
+- name: Read K3s node token
+  ansible.builtin.slurp:
+    src: "{{ k3s_token_path }}"
+  register: k3s_token_blob
+
+- name: Register token as host fact for agents
+  ansible.builtin.set_fact:
+    k3s_node_token: "{{ k3s_token_blob.content | b64decode | trim }}"
+
+- name: Make token available on the control-plane host facts file
+  ansible.builtin.copy:
+    dest: /etc/rancher/k3s/node-token-for-agents
+    content: "{{ k3s_node_token }}"
+    owner: root
+    group: root
+    mode: "0600"

@@ -1,0 +1,33 @@
+---
+- name: Grab node-token from the control-plane
+  ansible.builtin.set_fact:
+    k3s_token: "{{ hostvars[groups['k3s_server'][0]].k3s_node_token }}"
+  when: hostvars[groups['k3s_server'][0]].k3s_node_token is defined
+
+- name: Fail if token is missing
+  ansible.builtin.fail:
+    msg: "No k3s node-token found on {{ groups['k3s_server'][0] }}. Run the k3s_server role first."
+  when: k3s_token is not defined or k3s_token | length == 0
+
+- name: Check for existing k3s binary
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_bin
+
+- name: Install K3s agent and join the cluster
+  ansible.builtin.shell: |
+    set -euo pipefail
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="{{ k3s_version }}" \
+      K3S_URL="{{ k3s_server_url }}" \
+      K3S_TOKEN="{{ k3s_token }}" \
+      sh -s - agent --node-label "tethys.io/role=worker"
+  args:
+    creates: /usr/local/bin/k3s
+  when: not k3s_bin.stat.exists
+
+- name: Ensure k3s-agent is running
+  ansible.builtin.systemd:
+    name: k3s-agent
+    state: started
+    enabled: true

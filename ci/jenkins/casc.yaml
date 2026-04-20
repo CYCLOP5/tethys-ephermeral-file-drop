@@ -1,0 +1,92 @@
+# Jenkins Configuration-as-Code. Ansible drops this at
+# /var/lib/jenkins/casc/jenkins.yaml and Jenkins loads it on start.
+
+jenkins:
+  systemMessage: "Tethys CI - managed by JCasC"
+  numExecutors: 2
+  mode: NORMAL
+  scmCheckoutRetryCount: 2
+
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${JENKINS_ADMIN_PASSWORD:-change-me-after-first-login}"
+
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+  remotingSecurity:
+    enabled: true
+
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: "AWS_REGION"
+            value: "us-east-1"
+
+security:
+  scriptApproval:
+    approvedSignatures:
+      - "method java.util.regex.Matcher group int"
+
+unclassified:
+  location:
+    url: "http://localhost:8080/"
+    adminAddress: "admin@tethys.local"
+
+tool:
+  git:
+    installations:
+      - name: Default
+        home: git
+  jdk:
+    installations:
+      - name: corretto-21
+        home: /usr/lib/jvm/java-21-amazon-corretto
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "tethys-ecr-account-id"
+              description: "AWS account ID that owns the ECR repos"
+              secret: "${ECR_ACCOUNT_ID:-}"
+          - usernamePassword:
+              scope: GLOBAL
+              id: "github-token"
+              description: "GitHub PAT for webhooks/cloning"
+              username: "tethys-ci"
+              password: "${GITHUB_TOKEN:-}"
+
+jobs:
+  - script: |
+      pipelineJob('tethys') {
+        description('Main Tethys pipeline')
+        triggers {
+          githubPush()
+        }
+        definition {
+          cpsScmFlowDefinition {
+            scm {
+              gitSCM {
+                userRemoteConfigs {
+                  userRemoteConfig {
+                    url('https://github.com/REPLACE_ME/tethys-system.git')
+                    credentialsId('github-token')
+                  }
+                }
+                branches {
+                  branchSpec { name('*/main') }
+                }
+              }
+            }
+            scriptPath('ci/Jenkinsfile')
+            lightweight(true)
+          }
+        }
+      }

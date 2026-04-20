@@ -1,0 +1,71 @@
+# ---- Secrets / credentials ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.aws/
+.kube/
+kubeconfig*
+
+# ---- Terraform ----
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!**/terraform.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# ---- Ansible ----
+*.retry
+inventory.ini
+!inventory.ini.example
+
+# ---- Go ----
+bin/
+/dist/
+*.exe
+*.test
+*.out
+vendor/
+
+# ---- Node / React ----
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+.npm/
+.pnpm-store/
+
+# ---- Python (in case helper scripts land) ----
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ---- IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---- CI artifacts ----
+junit*.xml
+trivy-*.json
+semgrep-*.json
+gosec-*.json
+sbom.json

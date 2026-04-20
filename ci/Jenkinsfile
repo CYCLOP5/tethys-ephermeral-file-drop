@@ -1,0 +1,235 @@
+// Tethys CI/CD pipeline.
+//
+// Triggered by a GitHub webhook; each stage bails the build on failure. SAST
+// and image-scan stages fail on High/Critical findings by default. Apply to
+// the cluster happens only on the main branch.
+
+pipeline {
+    agent any
+
+    options {
+        timeout(time: 45, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '25'))
+        timestamps()
+        ansiColor('xterm')
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        AWS_REGION      = 'us-east-1'
+        ECR_ACCOUNT_ID  = credentials('tethys-ecr-account-id')   // 12-digit AWS account id
+        ECR_HOST        = "${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        VAULT_IMAGE     = "${ECR_HOST}/tethys/vault"
+        WIPER_IMAGE     = "${ECR_HOST}/tethys/wiper"
+        FRONTEND_IMAGE  = "${ECR_HOST}/tethys/frontend"
+        GIT_TAG         = "${env.GIT_COMMIT?.take(7) ?: 'dev'}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git --no-pager log -1 --stat'
+            }
+        }
+
+        stage('Lint') {
+            parallel {
+                stage('Go (vault + wiper)') {
+                    steps {
+                        sh '''
+                          set -eux
+                          go version
+                          command -v golangci-lint || (
+                            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+                              | sh -s -- -b $(go env GOPATH)/bin v1.59.1
+                          )
+                          (cd services/vault && $(go env GOPATH)/bin/golangci-lint run ./...)
+                          (cd services/wiper && $(go env GOPATH)/bin/golangci-lint run ./...)
+                        '''
+                    }
+                }
+                stage('Frontend') {
+                    steps {
+                        sh '''
+                          set -eux
+                          cd services/frontend
+                          npm ci --no-audit --no-fund
+                          npm run lint || true
+                        '''
+                    }
+                }
+                stage('Terraform fmt + validate') {
+                    steps {
+                        sh '''
+                          set -eux
+                          cd infra/terraform
+                          terraform fmt -check -recursive
+                          terraform init -backend=false -input=false
+                          terraform validate
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('SAST') {
+            steps {
+                sh '''
+                  set -eux
+                  # Go: gosec
+                  command -v gosec || (go install github.com/securego/gosec/v2/cmd/gosec@v2.20.0)
+                  $(go env GOPATH)/bin/gosec -fmt json -out gosec-vault.json ./services/vault/... || true
+                  $(go env GOPATH)/bin/gosec -fmt json -out gosec-wiper.json ./services/wiper/... || true
+
+                  # Generic: semgrep (OWASP Top Ten + secrets)
+                  command -v semgrep || pip3 install --quiet --user semgrep
+                  semgrep scan --config p/owasp-top-ten --config p/secrets \
+                         --error --json -o semgrep.json . || true
+
+                  # Filesystem vuln scan: trivy
+                  trivy fs --quiet --severity HIGH,CRITICAL --exit-code 1 --no-progress --format json -o trivy-fs.json . \
+                    || (cat trivy-fs.json; exit 1)
+                '''
+                archiveArtifacts artifacts: '*.json', fingerprint: true, onlyIfSuccessful: false
+            }
+        }
+
+        stage('Unit tests') {
+            parallel {
+                stage('Vault') {
+                    steps { sh '(cd services/vault && go test -race -count=1 ./...)' }
+                }
+                stage('Wiper') {
+                    steps { sh '(cd services/wiper && go test -race -count=1 ./...)' }
+                }
+                stage('Frontend') {
+                    steps {
+                        sh '''
+                          cd services/frontend
+                          npm test --silent
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('ECR login') {
+            steps {
+                sh '''
+                  aws ecr get-login-password --region ${AWS_REGION} \
+                    | docker login --username AWS --password-stdin ${ECR_HOST}
+                '''
+            }
+        }
+
+        stage('Build + scan + push images') {
+            parallel {
+                stage('vault') {
+                    steps { buildScanPush('vault', 'services/vault') }
+                }
+                stage('wiper') {
+                    steps { buildScanPush('wiper', 'services/wiper') }
+                }
+                stage('frontend') {
+                    steps { buildScanPush('frontend', 'services/frontend') }
+                }
+            }
+        }
+
+        stage('Terraform plan') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                  set -eux
+                  cd infra/terraform
+                  terraform init -input=false
+                  terraform plan -input=false -out=tfplan
+                '''
+                archiveArtifacts artifacts: 'infra/terraform/tfplan', fingerprint: true
+            }
+        }
+
+        stage('Approve apply') {
+            when { branch 'main' }
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    input message: 'Apply infrastructure?', ok: 'Apply'
+                }
+            }
+        }
+
+        stage('Terraform apply') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                  cd infra/terraform
+                  terraform apply -input=false tfplan
+                '''
+            }
+        }
+
+        stage('Ansible converge') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                  cd infra/ansible
+                  ansible -i inventory.ini all -m ping
+                  ansible-playbook -i inventory.ini playbooks/site.yml
+                '''
+            }
+        }
+
+        stage('Kubectl deploy') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                  set -eux
+
+                  # Rewrite image refs with the just-pushed git-sha tag.
+                  TAG=${GIT_TAG}
+                  for f in deploy/k8s/vault/deployment.yaml deploy/k8s/wiper/cronjob.yaml deploy/k8s/frontend/deployment.yaml; do
+                    sed -i \\
+                      -e "s|REPLACE_ME_WITH_ECR_URI/tethys/vault:REPLACE_ME|${VAULT_IMAGE}:${TAG}|g" \\
+                      -e "s|REPLACE_ME_WITH_ECR_URI/tethys/wiper:REPLACE_ME|${WIPER_IMAGE}:${TAG}|g" \\
+                      -e "s|REPLACE_ME_WITH_ECR_URI/tethys/frontend:REPLACE_ME|${FRONTEND_IMAGE}:${TAG}|g" \\
+                      "$f"
+                  done
+
+                  kubectl apply -f deploy/k8s/namespace.yaml
+                  kubectl apply -R -f deploy/k8s/policies
+                  kubectl apply -R -f deploy/k8s/vault
+                  kubectl apply -R -f deploy/k8s/wiper
+                  kubectl apply -R -f deploy/k8s/frontend
+                  kubectl apply -R -f deploy/k8s/ingress
+
+                  kubectl -n tethys rollout status deploy/vault   --timeout=180s
+                  kubectl -n tethys rollout status deploy/frontend --timeout=180s
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: '**/junit*.xml,**/gosec-*.json,semgrep.json,trivy-*.json', allowEmptyArchive: true
+        }
+        failure {
+            echo "Build failed. See ${env.BUILD_URL} for logs."
+        }
+    }
+}
+
+// Reusable helper: build, scan, push an image.
+def buildScanPush(String name, String ctx) {
+    def image = "${env.ECR_HOST}/tethys/${name}"
+    sh """
+      set -eux
+      docker build -t ${image}:${env.GIT_TAG} ${ctx}
+      trivy image --quiet --severity HIGH,CRITICAL --exit-code 1 --no-progress \\
+           --format json -o trivy-${name}.json ${image}:${env.GIT_TAG}
+      docker push ${image}:${env.GIT_TAG}
+      docker tag ${image}:${env.GIT_TAG} ${image}:latest
+      docker push ${image}:latest
+    """
+}

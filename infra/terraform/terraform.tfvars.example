@@ -1,0 +1,24 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is git-ignored so your secrets do not leak.
+
+aws_region    = "us-east-1"
+environment   = "dev"
+
+# EC2 key pair you control. Create with:
+#   aws ec2 create-key-pair --key-name tethys \
+#       --query 'KeyMaterial' --output text > ~/.ssh/tethys.pem
+#   chmod 400 ~/.ssh/tethys.pem
+key_pair_name = "tethys"
+
+# Your home/office public IPv4 in /32 form. Get it with:
+#   echo "$(curl -s https://checkip.amazonaws.com)/32"
+allowed_ssh_cidr = "1.2.3.4/32"
+
+# Keep at 1 for free tier, 2-3 for realistic demos.
+k3s_agent_count = 1
+
+# Random, long. Generate with: openssl rand -base64 24
+db_password = "REPLACE_ME_WITH_A_LONG_RANDOM_STRING"
+
+# Optional: TLS on the ALB. Leave empty to run HTTP-only.
+# acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
