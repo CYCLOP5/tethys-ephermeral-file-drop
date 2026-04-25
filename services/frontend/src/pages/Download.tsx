@@ -41,7 +41,7 @@ export function DownloadPage() {
       setPhase("decrypting");
       const { bytes, filename, mimeType } = await decryptBlob(ciphertext, iv!, salt!, passphrase);
 
-      const blob = new Blob([bytes], { type: mimeType });
+      const blob = new Blob([bytes as any], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
