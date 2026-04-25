@@ -39,7 +39,7 @@ export async function putPresigned(url: string, bytes: Uint8Array, onProgress?: 
     };
     xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`S3 PUT ${xhr.status}`)));
     xhr.onerror = () => reject(new Error("S3 PUT network error"));
-    xhr.send(new Blob([bytes]));
+    xhr.send(new Blob([bytes as any]));
   });
 }
 
