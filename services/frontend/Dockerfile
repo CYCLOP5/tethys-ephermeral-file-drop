@@ -1,12 +1,14 @@
 # syntax=docker/dockerfile:1.6
 FROM node:20-bookworm-slim AS deps
 WORKDIR /app
-COPY package.json ./
+COPY package.json package-lock.json ./
 RUN npm install --no-audit --no-fund
 
 FROM node:20-bookworm-slim AS build
 WORKDIR /app
 ENV NODE_ENV=production
+ARG VITE_UPLOAD_BEARER=""
+ENV VITE_UPLOAD_BEARER=${VITE_UPLOAD_BEARER}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
