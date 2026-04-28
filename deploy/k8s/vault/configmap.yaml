@@ -5,6 +5,6 @@ metadata:
   namespace: tethys
 data:
   AWS_REGION: "us-east-1"
-  S3_BUCKET: "REPLACE_ME_WITH_TERRAFORM_OUTPUT"
+  S3_BUCKET: "tethys-dev-files-4acaaa0c"
   MAX_TTL_SECONDS: "604800"
   VAULT_ADDR: ":8080"

@@ -34,7 +34,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: vault
-          image: REPLACE_ME_WITH_ECR_URI/tethys/vault:REPLACE_ME
+          image: 465532803709.dkr.ecr.us-east-1.amazonaws.com/tethys/vault:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
