@@ -1,144 +1,100 @@
-# Tethys - Zero-Trust Ephemeral Secure File Drop
+# tethys - zero-trust ephemeral secure file drop
 
-Tethys is a microservices platform for the highly secure, *temporary* transfer
-of sensitive files. Data is encrypted client-side before it ever touches the
-network, assigned a strict TTL or single-use constraint, and cryptographically
-wiped from object storage the moment that constraint is met. The stack is
-deployed on AWS via a fully automated DevSecOps pipeline.
+tethys is a microservices-based platform engineered for highly secure and strictly temporary transfer of sensitive payloads
+payloads undergo client-side encryption before network transmission, receive strict time-to-live or single-use constraints, and are cryptographically purged from object storage upon constraint fulfillment
+the infrastructure stack is deployed to amazon web services via a fully automated devsecops pipeline
 
-> Named after Tethys, the Greek titan of fresh, ephemeral water: the files flow
-> through and leave no trace.
+> named after tethys, the greek titan of fresh ephemeral water: the files flow through and leave no trace
 
-## At a glance
+## architecture at a glance
 
 ```text
-  Browser  ->  AWS ALB  ->  Nginx Ingress  ->  Frontend (React, WebCrypto)
-                                            ->  Vault    (Go, REST)
-                                                     |
-                              Wiper CronJob (Go)  ---+
-                                                     v
-                                     RDS Postgres + S3 (encrypted)
+  browser  ->  amazon application load balancer  ->  nginx ingress  ->  frontend (react, webcrypto api)
+                                                                    ->  vault service (go, rest api)
+                                                                             |
+                                              wiper cronjob (go)  -----------+
+                                                                             v
+                                                                    rds postgres + s3 (encrypted storage)
 ```
 
-- **Frontend** encrypts the file in the browser with AES-256-GCM derived from a
-  user passphrase (PBKDF2, 300k iters). Plaintext never leaves the client.
-- **Vault** mints single-use, short-lived presigned S3 URLs and stores only
-  metadata (id, sha256, size, TTL, remaining_downloads) in Postgres.
-- **Wiper** runs every 5 minutes as a Kubernetes `CronJob` and hard-deletes
-  objects whose TTL has expired or whose download budget is exhausted.
-- **Infra** is Terraform on AWS: VPC, 3-5 `t3.micro` EC2 instances, RDS
-  Postgres `db.t3.micro`, S3 with SSE + lifecycle backstop, ALB + ACM, scoped
-  IAM roles per workload.
-- **K3s** gives us real, certified Kubernetes on Free-Tier EC2 (EKS is not
-  Free Tier; Minikube is explicitly disallowed by the spec).
-- **CI/CD** is Jenkins LTS: lint -> SAST (`gosec`, `semgrep`, `trivy`) -> test
-  -> build -> image scan -> ECR push -> `terraform plan` -> `kubectl apply`.
+* frontend application handles in-browser payload encryption using aes-256-gcm with a key derived via pbkdf2 and 300,000 iterations
+* plaintext bytes never leave the client environment
+* vault service generates single-use ephemeral presigned s3 urls and persists only file metadata (identifier, sha256 hash, size, time-to-live, remaining downloads) within the postgres database
+* wiper service executes as a kubernetes cronjob on a five-minute interval to issue hard-deletes for objects exceeding their time-to-live or download budget
+* infrastructure is provisioned using terraform on amazon web services, encompassing virtual private clouds, t3.micro ec2 instances, rds postgres, and s3 with server-side encryption and lifecycle backstops
+* kubernetes orchestration is handled by k3s to maintain free-tier compatibility on ec2 instances, as eks is explicitly avoided
+* continuous integration runs on jenkins long-term support with sequential stages for linting, static analysis (gosec, semgrep, trivy), testing, building, image scanning, elastic container registry push, and kubectl apply operations
 
-See [`docs/architecture.md`](docs/architecture.md) for the full NIST SP 800-207
-zero-trust mapping and threat model.
+refer to `docs/architecture.md` for the comprehensive nist sp 800-207 zero-trust mapping and system threat model
 
-## Repo layout
+## repository layout
 
 ```text
 .
-├── docs/                Architecture, AWS bootstrap, runbook, diagrams
+├── docs/                architecture specifications, aws bootstrap routines, runbooks, infrastructure diagrams
 ├── infra/
-│   ├── terraform/       AWS (VPC, EC2, RDS, S3, IAM, ALB)
-│   └── ansible/         OS hardening, K3s, Jenkins
+│   ├── terraform/       aws resources (virtual private cloud, ec2 compute, rds databases, s3 storage, iam roles, load balancers)
+│   └── ansible/         operating system hardening protocols, k3s bootstrapping, jenkins configuration
 ├── services/
-│   ├── vault/           Go REST API
-│   ├── wiper/           Go CronJob binary
-│   └── frontend/        React + Vite + TypeScript
-├── deploy/k8s/          Namespace, deployments, services, NetworkPolicies,
-│                        Ingress, Wiper CronJob
+│   ├── vault/           go-based rest application programming interface
+│   ├── wiper/           go-based cronjob executable
+│   └── frontend/        react client utilizing vite and typescript
+├── deploy/k8s/          kubernetes namespaces, deployment manifests, service definitions, network policies, ingress routes
 └── ci/
-    ├── Jenkinsfile      Pipeline definition
-    └── jenkins/casc.yaml Jenkins Configuration-as-Code
+    ├── Jenkinsfile      declarative pipeline definition
+    └── jenkins/casc.yaml jenkins configuration-as-code state
 ```
 
-## Quickstart
+## demonstration and verification scripts
+
+the repository includes bash scripts to quickly validate system security and operational functionality
+
+* `./up.sh` / `./down.sh` automate the start and stop operations for all ec2 instances to manage compute costs while preserving k3s cluster state
+* `./test_api.sh` executes a complete command-line upload flow (initialization, url presigning, and direct put) to validate backend api health
+* `./show_storage.sh` retrieves s3 object lists and dumps hexadecimal output of the latest blob to verify at-rest encryption properties
+* `./check_system.sh` polls kubernetes pod status metrics and streams real-time log outputs from the vault service
+
+## quickstart deployment
 
 ```bash
-# 1. One-time AWS bootstrap (IAM user, access keys, MFA).
-open docs/aws-bootstrap.md                   # follow every step
-
-# 2. Pick your inputs.
+# 1. provision amazon web services infrastructure
 cd infra/terraform
-cp terraform.tfvars.example terraform.tfvars # edit key_pair_name, db_password, allowed_ssh_cidr
+terraform init && terraform apply
 
-# 3. Provision AWS.
-terraform init
-terraform apply                              # ~8-10 minutes
-
-# 4. Configure the instances (K3s cluster + Jenkins).
+# 2. configure operating systems and k3s orchestration
 cd ../ansible
 ansible-playbook -i inventory.ini playbooks/site.yml
 
-# 5. Deploy the app via Jenkins (open the URL from `terraform output jenkins_url`
-#    and run the `tethys` pipeline), or manually:
+# 3. deploy application services via kubectl
 cd ../../deploy/k8s
 kubectl apply -f .
 
-# 6. Grab the public URL.
-cd ../../infra/terraform
-terraform output alb_dns_name
+# 4. execute verification test suite
+./test_api.sh
+./show_storage.sh
 ```
 
-A convenience `Makefile` wraps the common commands - `make plan`, `make apply`,
-`make deploy`, `make destroy`, `make stop-ec2` (cost-saver).
+## security and architecture implementation notes
 
-## Local development (no AWS required)
+### client-side encryption fallback mechanisms
+the native web crypto api (`crypto.subtle`) is standard but browsers disable it on insecure http origins
+for development environments routing through a public load balancer without an active acm certificate, tethys implements a transparent cryptographic polyfill utilizing `@noble/ciphers` and `@noble/hashes`
+this fallback ensures aes-256-gcm operations execute successfully in-browser even over standard http connections
 
-```bash
-# Vault + Postgres + MinIO via docker-compose
-cd services/vault && make dev            # starts the stack on http://localhost:8080
+### zero-trust storage constraints
+the backend vault service remains entirely isolated from the decryption passphrase
+it functions strictly as a secure routing layer to dispense s3 presigned urls
+malicious actors with root access to the aws account cannot decrypt storage payloads without obtaining the out-of-band passphrase
 
-# Frontend
-cd services/frontend && npm install && npm run dev
-```
+### automated cleanup routines
+the wiper service queries the postgres instance for expired records every five minutes
+it issues delete operations directly to the s3 bucket and subsequently scrubs all database metadata to guarantee ephemeral constraints are strictly enforced
 
-The frontend talks to `http://localhost:8080` by default; override with
-`VITE_API_BASE_URL`.
-
-## Security posture (summary)
-
-- **Identity**: every workload has its own IAM role with the minimum S3
-  verbs it needs (`vault`: `PutObject`/`GetObject`; `wiper`: `DeleteObject`/
-  `ListBucket`). Jenkins cannot read user files. Vault cannot delete them.
-- **Data**: plaintext lives only in the browser. S3 is SSE-encrypted and has
-  a 7-day lifecycle rule as a backstop to the Wiper. TLS terminates at the
-  ALB and is re-established in-cluster by Nginx Ingress.
-- **Network**: Kubernetes NetworkPolicies deny-by-default; only the edges
-  declared in `deploy/k8s/policies/` are allowed. RDS lives in a subnet with
-  no route to an internet gateway.
-- **Supply chain**: every image is built by Jenkins from pinned base digests,
-  scanned with Trivy, and signed-then-deployed. No prebuilt public images in
-  the cluster apart from `nginx:alpine-slim` and distroless.
-
-Full mapping to NIST SP 800-207 in [`docs/architecture.md`](docs/architecture.md).
-
-## FAQ
-
-**Why K3s and not EKS?** EKS has a $0.10/hr control plane fee. K3s is fully
-certified Kubernetes that runs comfortably on a `t3.micro` and has no
-per-cluster fee. The spec also explicitly bans Minikube-style local clusters.
-
-**Why public-subnet EC2 instead of private + NAT?** A single NAT Gateway
-costs ~$32/month, which blows the free-tier budget. The instances are
-protected by tight security groups (SSH only from your IP, app ports only
-from the ALB), so public subnet is acceptable for a demo. Move them private
-+ NAT or VPC endpoints for production.
-
-**Can I use a real domain?** Yes. Point a Route 53 ALIAS record at
-`alb_dns_name`, request an ACM cert in `us-east-1`, set
-`acm_certificate_arn` in `terraform.tfvars`, and re-apply.
-
-## Tear down
+## environment teardown
 
 ```bash
 cd infra/terraform
 terraform destroy
 ```
 
-If destroy complains that the S3 bucket is not empty, run
-`aws s3 rm s3://<bucket> --recursive` first.
+if the destroy operation throws errors regarding non-empty s3 buckets, execute `aws s3 rm s3://<bucket> --recursive` prior to tearing down the state

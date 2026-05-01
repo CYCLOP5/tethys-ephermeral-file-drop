@@ -1,143 +1,125 @@
-# Tethys Architecture
+# tethys arch
 
-This document covers:
+docs:
+1. sys overview & data flow
+2. threat model (stride-lite)
+3. nist sp 800-207 zt arch mapping
 
-1. System overview and data flows
-2. Threat model (STRIDE-lite)
-3. Mapping of Tethys controls to NIST SP 800-207 Zero Trust Architecture
-
-## 1. System overview
+## 1. sys overview
 
 ```mermaid
 flowchart LR
-  Browser["Browser: React + WebCrypto"]
-  Browser -->|HTTPS| ALB["AWS ALB + ACM"]
-  ALB --> Ingress["Nginx Ingress on K3s"]
-  Ingress --> Frontend["frontend pod: static nginx"]
-  Ingress --> Vault["vault pod: Go REST"]
+  ua["ua: react + webcrypto"]
+  ua -->|https| alb["aws alb + acm"]
+  alb --> ing["nginx ing on k3s"]
+  ing --> fe["fe pod: static nginx"]
+  ing --> vault["vault pod: go rest"]
 
-  Vault -->|"presigned PUT/GET"| S3[("S3 encrypted bucket")]
-  Vault -->|"metadata + TTL"| RDS[("RDS Postgres")]
+  vault -->|"presigned put/get"| s3[("s3 enc bucket")]
+  vault -->|"meta + ttl"| rds[("rds pg")]
 
-  Wiper["wiper CronJob: Go"] -->|"DeleteObject"| S3
-  Wiper -->|"purge rows"| RDS
+  wiper["wiper cj: go"] -->|"delobj"| s3
+  wiper -->|"purge rows"| rds
 
-  Browser -.->|"ciphertext PUT"| S3
-  Browser -.->|"ciphertext GET"| S3
+  ua -.->|"ctext put"| s3
+  ua -.->|"ctext get"| s3
 
-  subgraph DevSecOps
-    GitHub --> Jenkins
-    Jenkins -->|"terraform apply"| AWS[("AWS APIs")]
-    Jenkins -->|"ansible"| EC2
-    Jenkins -->|"kubectl apply"| K3s[("K3s API server")]
-    Jenkins -->|"build + scan"| ECR[("ECR")]
+  subgraph devsecops
+    git --> ci
+    ci -->|"tf apply"| aws[("aws apis")]
+    ci -->|"ansible"| ec2
+    ci -->|"k apply"| k3s[("k3s api")]
+    ci -->|"build+scan"| ecr[("ecr")]
   end
 ```
 
-### Upload flow
+### up flow
 
-1. User picks a file in the React UI and types a passphrase.
-2. The browser derives a 256-bit AES-GCM key via `PBKDF2(SHA-256, 300k)`,
-   generates a fresh 16-byte salt and 12-byte IV, and encrypts the file.
-3. A JSON metadata header (filename, mime type) is prepended before the
-   ciphertext so the download side can restore the download's filename.
-4. Browser calls `POST /api/v1/uploads` with `{size, ttl, max_downloads}`.
-   Vault persists a row in Postgres and returns a presigned S3 PUT URL and
-   a 256-bit share token.
-5. Browser PUTs ciphertext directly to S3.
-6. Browser composes the share URL `https://<host>/d/<token>#<salt>.<iv>`
-   and shows it to the user. The fragment after `#` never leaves the
-   browser, so the salt/IV are invisible to the server and any proxy.
+1. usr selects file in react ui & inputs pwd
+2. ua derives 256b aes-gcm key via pbkdf2(sha-256, 300k), gens 16b salt & 12b iv, enc file
+3. json meta hdr (fn, mime) prepended to ctext for dl side restoration
+4. ua req `post /api/v1/uploads` w/ `{size, ttl, max_downloads}`
+   vault txns row in pg & acks presigned s3 put url + 256b share token
+5. ua puts ctext dir to s3
+6. ua builds url `https://<host>/d/<token>#<salt>.<iv>` & outputs to usr
+   frag after `#` never leaves ua, hiding salt/iv from be/proxy
 
-### Download flow
+### dl flow
 
-1. Recipient opens `https://<host>/d/<token>#<salt>.<iv>`.
-2. Browser calls `GET /api/v1/downloads/{token}`. Vault opens a serializable
-   transaction, atomically decrements `remaining_downloads`, and returns a
-   short-lived presigned GET URL (or 410 Gone).
-3. Browser downloads ciphertext from S3.
-4. Recipient types the passphrase; browser derives the key, decrypts with
-   `AES-GCM(iv)`, and triggers a browser download using the restored
-   filename/mime.
+1. rx opens `https://<host>/d/<token>#<salt>.<iv>`
+2. ua req `get /api/v1/downloads/{token}`
+   vault init serializable txn, atomic dec `remaining_downloads`, acks short-lived presigned get url (or 410 gone)
+3. ua dl ctext from s3
+4. rx inputs pwd; ua derives key, dec w/ aes-gcm(iv), inits dl via restored fn/mime
 
-### Wipe flow
+### wipe flow
 
-1. Kubernetes CronJob `wiper` runs every 5 minutes.
-2. Wiper opens a serializable txn, `SELECT ... FOR UPDATE SKIP LOCKED`s a
-   batch of rows where `expires_at <= now()` or `remaining_downloads <= 0`,
-   issues `S3:DeleteObject`, and deletes the rows.
-3. The S3 bucket also has a hard 7-day lifecycle rule as a belt-and-suspenders
-   backstop in case the wiper is ever unavailable.
+1. k8s cj `wiper` execs `*/5 * * * *`
+2. wiper init serializable txn, `select ... for update skip locked` batch where `expires_at <= now()` or `remaining_downloads <= 0`, req `s3:deleteobject`, drops rows
+3. s3 hard 7d lc rule acts as fallback if wiper unavail
 
-## 2. Threat model (STRIDE-lite)
+## 2. threat model (stride-lite)
+<img width="1024" height="564" alt="image" src="https://github.com/user-attachments/assets/a2976678-bd13-4a02-b420-667ab9092805" />
 
-| Threat               | Example                                        | Mitigation |
-| -------------------- | ---------------------------------------------- | ---------- |
-| **Spoofing**         | Attacker impersonates Vault to the frontend    | TLS at ALB, Ingress, and S3 endpoint. NetworkPolicies ensure the frontend pod can only be reached from the ingress controller namespace. |
-| **Tampering**        | Attacker mutates ciphertext in transit or S3   | AES-GCM is an AEAD; any tamper makes decryption fail on the recipient. S3 versioning + lifecycle expiry of noncurrent versions. |
-| **Repudiation**      | User denies they uploaded a file               | `access_log` table in Postgres records `upload_init` / `download` with IP + UA. K8s audit logs enabled on the API server. |
-| **Info disclosure**  | Server compromise reveals plaintext            | Plaintext never leaves the browser. Vault sees only metadata + ciphertext lengths. Presigned URLs expire in ~5 min. |
-| **Denial of service**| Attacker exhausts S3 / RDS                     | ALB rate limits (can be tightened), per-upload size cap (100 MB demo), file count per IP could be added via Postgres. Free-tier bounded by design. |
-| **Privilege escal.** | Vault pod tries to call `s3:DeleteObject`      | IAM policies are role-per-workload (`vault-role` has only PUT/GET, `wiper-role` has only DELETE/LIST). NetworkPolicies block pod-to-pod lateral movement. |
+| threat | ex | mit |
+| --- | --- | --- |
+| **sp** | atk spoofs vault to fe | tls @ alb, ing, s3 netpols restrict fe pod ingress to ing ns |
+| **tm** | atk mutates ctext in-flight/s3 | aes-gcm is aead; tamper fails dec on rx s3 ver + lc exp on noncurrent vers |
+| **rp** | usr repuds up | `access_log` tbl in pg logs `upload_init`/`download` w/ ip+ua k8s audit logs on api svr |
+| **id** | svr rce leaks ptext | ptext never leaves ua vault only sees meta + ctext len presigned urls exp ~5m |
+| **dos** | atk exhausts s3/rds | alb rl (tbd), per-up size cap (100mb demo), file cnt per ip via pg ft bounded by design |
+| **pe** | vault pod req `s3:deleteobject` | iam pols scoped per-wkld (`vault-role` put/get only, `wiper-role` del/list only) netpols drop pod-to-pod lateral mvmt |
 
-### Key non-goals / known gaps
+### non-goals / gaps
 
-- No SSO for upload. Demo uses a shared HS256 JWT secret. A real deployment
-  should plug in OIDC (Cognito, Okta, Azure AD) via Istio or an auth proxy.
-- No end-to-end integrity check of the passphrase: an incorrect passphrase
-  fails *decryption* but the server cannot distinguish "wrong passphrase"
-  from "tampered ciphertext" by design (GCM).
-- Wiper latency is up to 5 minutes after TTL expiry. S3 lifecycle is the
-  long-pole backstop (daily evaluation).
-- On K3s, IAM-for-pods is approximated via the node instance profile.
-  Production should switch to EKS Pod Identity or the
-  [kube-workload-identity](https://github.com/kube-sa/aws-workload-identity)
-  project.
+- no sso for up demo uses shared hs256 jwt sec prod should plug oidc (cognito/okta/aad) via istio/auth proxy
+- no e2e int check on pwd: bad pwd fails *dec* but svr cant diff "bad pwd" vs "tampered ctext" due to gcm
+- wiper lat up to 5m post ttl exp s3 lc is fallback (1d eval)
+- on k3s, iam4pods approx'd via node ip prod -> eks pod id or kube-workload-identity
 
-## 3. NIST SP 800-207 mapping
+## 3. nist sp 800-207 zta map
 
-NIST's seven tenets of Zero Trust map to concrete Tethys controls below.
+nist 7 tenets of zt map to tethys ctrls
 
-| # | Tenet                                                                     | Tethys implementation |
-| - | -------------------------------------------------------------------------- | --------------------- |
-| 1 | All data sources and computing services are resources                     | Files (S3 objects), metadata (RDS rows), workloads (K8s pods), and infra (EC2 instances) are all first-class resources with ownership + tags + IAM. |
-| 2 | All communication is secured regardless of network location                | TLS on the ALB (ACM), TLS from browser to S3, TLS from Vault/Wiper to RDS (enforced via `sslmode=require`), Kubernetes API server TLS, Kubelet TLS. |
-| 3 | Access to individual enterprise resources is granted per-session          | Every upload gets its own random share token. Every download atomically decrements a counter and gets a *new* presigned GET URL valid for ~2 min. JWTs on the upload endpoint are short-lived. |
-| 4 | Access is determined by dynamic policy                                    | TTL + remaining-download counters evaluated per-request. NetworkPolicies match on pod labels. IAM policies scoped per-workload (`vault` vs `wiper`). |
-| 5 | The enterprise monitors and measures the integrity and security posture    | `access_log` table + K8s audit log + ALB access logs + Trivy image scan results + Semgrep SAST reports archived by Jenkins. |
-| 6 | All resource authentication and authorization are dynamic and strictly enforced before access | HS256 JWT on `/uploads`; 256-bit share tokens on `/downloads`; IAM evaluation on every S3 call; NetworkPolicies enforce ingress/egress per-pod. |
-| 7 | The enterprise collects as much information as possible about the current state and uses it to improve its security posture | RDS audit table, K8s audit log, zerolog structured logs from vault/wiper, SAST + image-scan results, Terraform state as the source of truth for what "should" exist. |
+| # | tenet | tethys impl |
+| - | --- | --- |
+| 1 | all ds & svc are res | files (s3 objs), meta (rds rows), wklds (k8s pods), infra (ec2 insts) treated as 1st-class res w/ own+tags+iam |
+| 2 | all comm sec rx of loc | tls on alb (acm), ua->s3, vault/wiper->rds (`sslmode=require`), k8s api svr, kubelet |
+| 3 | acc to res is per-sess | ups gen rnd share token dls atomic dec cnt & gen *new* presigned get url (ttl ~2m) up jwts short-lived |
+| 4 | acc det by dyn pol | ttl + rem-dl cntrs eval'd per-req netpols match pod lbls iam pols scoped per-wkld |
+| 5 | ent mons & meas int & sec posture | `access_log` tbl + k8s audit + alb logs + trivy img scans + semgrep sast archived by ci |
+| 6 | res auth/authz dyn & enf b4 acc | hs256 jwt on `/uploads` 256b share tokens on `/downloads` iam eval on every s3 api req netpols enf pod i/e |
+| 7 | ent collects info on state to imp sec posture | rds audit tbl, k8s audit, zerolog json from be, sast+img scans, tf state as ssot |
 
-### Pillar coverage (CISA Zero Trust Maturity Model)
+### pillar cov (cisa ztmm)
 
-| Pillar           | Control (Traditional -> Advanced)                                        |
-| ---------------- | ------------------------------------------------------------------------ |
-| **Identity**     | Deployer IAM user with MFA; JWT + share token for users; per-workload IAM roles. |
-| **Devices**      | Not directly enforced (it's a file-drop for humans), but PSA `restricted` profile prevents privileged pods. |
-| **Networks**     | VPC with public/private split, SG per workload, K8s NetworkPolicies default-deny, TLS end-to-end. |
-| **Applications** | Distroless containers, non-root, read-only root FS, seccomp `RuntimeDefault`, drop-ALL caps. |
-| **Data**         | AES-256-GCM client-side, SSE on S3, encrypted RDS storage, TTL + wipe backstop. |
+| pillar | ctrl |
+| --- | --- |
+| **id** | dep iam usr w/ mfa jwt + share token for usrs per-wkld iam roles |
+| **dev** | n/a (h2m drop) but psa `restricted` prof drops priv pods |
+| **net** | vpc w/ pub/priv split, sg per wkld, k8s netpols def-deny, e2e tls |
+| **app** | distroless ctrs, non-root, ro rootfs, seccomp `runtimedefault`, drop-all caps |
+| **data** | aes-256-gcm ua-side, sse-s3, enc rds, ttl+wipe fallback |
 
-## Appendix A: image inventory
+## appx a: img inv
 
-| Image                | Base                                  | Runs as      |
-| -------------------- | ------------------------------------- | ------------ |
-| `tethys/vault`       | `gcr.io/distroless/static-debian12:nonroot` | uid 65532    |
-| `tethys/wiper`       | `gcr.io/distroless/static-debian12:nonroot` | uid 65532    |
-| `tethys/frontend`    | `nginxinc/nginx-unprivileged:1.27-alpine`   | uid 101      |
+| img | base | runs as |
+| --- | --- | --- |
+| `tethys/vault` | `gcr.io/distroless/static-debian12:nonroot` | uid 65532 |
+| `tethys/wiper` | `gcr.io/distroless/static-debian12:nonroot` | uid 65532 |
+| `tethys/frontend` | `nginxinc/nginx-unprivileged:1.27-alpine` | uid 101 |
 
-All images are built by Jenkins from pinned base tags, scanned with Trivy,
-pushed to a private ECR with `image_tag_mutability = IMMUTABLE`, and the
-deployment manifests reference a git-sha tag (never `:latest` in production).
+imgs built by ci via pinned base tags, trivy scanned, pushed to priv ecr w/ `image_tag_mutability = immutable`
+k8s manifests ref git-sha tag (no `:latest` in prod)
 
-## Appendix B: AWS resource inventory
+## appx b: aws res inv
 
-See `infra/terraform/outputs.tf` for the exact resources. Summary:
+ref `infra/terraform/outputs.tf`
 
-- VPC + 2 public + 2 private subnets (2 AZs)
-- 3-5 EC2 `t3.micro` (Jenkins + K3s server + 1-3 agents)
-- RDS `db.t3.micro` Postgres 16
-- S3 bucket: SSE-S3, block-public, versioning, lifecycle 7-day expiry
-- ALB: internet-facing, WAF optional (not enabled by default)
-- 3 IAM roles: `vault`, `wiper`, `jenkins` + one `k3s_agent` instance profile
-- 3 ECR repositories: immutable tags, scan-on-push
+- vpc + 2 pub + 2 priv subnets (2 azs)
+- 3-5 ec2 `t3.micro` (ci + k3s svr + 1-3 agts)
+- rds `db.t3.micro` pg 16
+- s3 bucket: sse-s3, block-pub, ver, lc 7d exp
+- alb: inet-facing, waf opt (def off)
+- 3 iam roles: `vault`, `wiper`, `jenkins` + 1 `k3s_agent` inst prof
+- 3 ecr repos: imm tags, scan-on-push
