@@ -51,10 +51,37 @@ for AGENT_IP in $AGENT_IPS; do
     refresh_ecr "$AGENT_IP"
 done
 
-echo "--- 4. Applying Kubernetes Manifests ---"
+ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" '
+    if ! command -v helm &> /dev/null; then
+        echo "Installing Helm..."
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    fi
+'
+
+echo "--- 4. Installing Nginx Ingress Controller ---"
+scp -o StrictHostKeyChecking=no -i "$KEY" deploy/k8s/ingress/nginx-ingress-values.yaml ec2-user@"$SERVER_IP":/tmp/
+ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" '
+    KC=/etc/rancher/k3s/k3s.yaml
+    sudo KUBECONFIG=$KC /usr/local/bin/helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+    sudo KUBECONFIG=$KC /usr/local/bin/helm repo update
+    sudo KUBECONFIG=$KC /usr/local/bin/helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+      --namespace ingress-nginx --create-namespace \
+      -f /tmp/nginx-ingress-values.yaml
+'
+
+echo "Waiting for Ingress Controller to be ready..."
+ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" '
+    sudo kubectl wait --namespace ingress-nginx \
+      --for=condition=ready pod \
+      --selector=app.kubernetes.io/component=controller \
+      --timeout=120s
+'
+
+echo "--- 5. Applying Kubernetes Manifests ---"
 ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" "mkdir -p ~/k8s"
 ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" "rm -rf ~/k8s/*"
 scp -o StrictHostKeyChecking=no -i "$KEY" -r deploy/k8s/* ec2-user@"$SERVER_IP":~/k8s/
+
 ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" 'sudo kubectl apply -f ~/k8s/namespace.yaml'
 sleep 2
 
