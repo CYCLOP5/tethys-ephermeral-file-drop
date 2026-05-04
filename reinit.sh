@@ -55,7 +55,12 @@ echo "--- 4. Applying Kubernetes Manifests ---"
 ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" "mkdir -p ~/k8s"
 ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" "rm -rf ~/k8s/*"
 scp -o StrictHostKeyChecking=no -i "$KEY" -r deploy/k8s/* ec2-user@"$SERVER_IP":~/k8s/
-ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" 'sudo kubectl apply -R -f ~/k8s/'
+ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" 'sudo kubectl apply -f ~/k8s/namespace.yaml'
+sleep 2
+
+ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" '
+    find ~/k8s -name "*.yaml" ! -name "nginx-ingress-values.yaml" ! -name "namespace.yaml" | xargs sudo kubectl apply -f
+'
 
 echo ""
 echo "Frontend: http://$(cd infra/terraform && terraform output -raw alb_dns_name)"
