@@ -8,12 +8,13 @@ cd ../..
 
 echo "--- 2. Fetching New Cluster Details ---"
 SERVER_SSH=$(cd infra/terraform && terraform output -raw k3s_server_ssh)
-AGENT_SSHS=$(cd infra/terraform && terraform output -json k3s_agents_ssh | python3 -c "import sys, json; print(' '.join(json.load(sys.stdin)))")
+AGENT_IPS=$(cd infra/terraform && terraform output -json k3s_agents_ssh | python3 -c "import sys, json; print(' '.join([s.split('@')[-1] for s in json.load(sys.stdin)]))")
 
 SERVER_IP=$(echo "$SERVER_SSH" | awk '{print $NF}' | cut -d'@' -f2)
 KEY=$(echo "$SERVER_SSH" | awk '{print $3}')
 
 echo "Server IP: $SERVER_IP"
+echo "Agent IPs: $AGENT_IPS"
 
 echo "--- 3. Refreshing ECR Credentials on All Nodes ---"
 refresh_ecr() {
@@ -46,8 +47,7 @@ EOF
 
 refresh_ecr "$SERVER_IP"
 
-for agent_ssh in $AGENT_SSHS; do
-    AGENT_IP=$(echo "$agent_ssh" | awk '{print $NF}' | cut -d'@' -f2)
+for AGENT_IP in $AGENT_IPS; do
     refresh_ecr "$AGENT_IP"
 done
 
