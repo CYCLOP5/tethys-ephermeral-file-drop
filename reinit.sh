@@ -59,7 +59,10 @@ ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" 'sudo kubectl ap
 sleep 2
 
 ssh -o StrictHostKeyChecking=no -i "$KEY" ec2-user@"$SERVER_IP" '
-    find ~/k8s -name "*.yaml" ! -name "nginx-ingress-values.yaml" ! -name "namespace.yaml" | xargs sudo kubectl apply -f
+    for f in $(find ~/k8s -name "*.yaml" ! -name "nginx-ingress-values.yaml" ! -name "namespace.yaml"); do
+        echo "Applying $f..."
+        sudo kubectl apply -f "$f"
+    done
 '
 
 echo ""
