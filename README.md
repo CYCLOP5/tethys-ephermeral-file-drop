@@ -6,16 +6,7 @@ the infrastructure stack is deployed to amazon web services via a fully automate
 
 > named after tethys, the greek titan of fresh ephemeral water: the files flow through and leave no trace
 
-## architecture at a glance
-
-```text
-  browser  ->  amazon application load balancer  ->  nginx ingress  ->  frontend (react, webcrypto api)
-                                                                    ->  vault service (go, rest api)
-                                                                             |
-                                              wiper cronjob (go)  -----------+
-                                                                             v
-                                                                    rds postgres + s3 (encrypted storage)
-```
+## architecture 
 
 * frontend application handles in-browser payload encryption using aes-256-gcm with a key derived via pbkdf2 and 300,000 iterations
 * plaintext bytes never leave the client environment
